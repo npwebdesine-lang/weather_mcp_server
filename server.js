@@ -4,11 +4,18 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { z } from "zod";
 
+// --- הגנה מפני קריסות (מונע שגיאות 502) ---
+process.on("uncaughtException", (error) => {
+  console.error("!!! CRITICAL ERROR (Prevented Crash):", error);
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("!!! UNHANDLED PROMISE (Prevented Crash):", reason);
+});
+
 const app = express();
 
-// --- תיקון קריטי: מחקנו את app.use(express.json()) ---
-// זה מה שגרם לשגיאת "stream is not readable". ה-SDK מטפל בזה לבד.
-
+// שמרנו על התיקון הקודם: בלי express.json()!
 app.use(cors());
 
 const mcpServer = new McpServer({
@@ -25,6 +32,7 @@ mcpServer.tool(
   },
   async ({ city }) => {
     console.log(`>>> [MCP] Handling request for: ${city}`);
+    // החזרת תשובה מדמה
     return {
       content: [
         {
@@ -36,22 +44,42 @@ mcpServer.tool(
   },
 );
 
+// משתנה לניהול החיבור
 let globalTransport = null;
 
 app.get("/sse", async (req, res) => {
-  console.log(">>> [SSE] New connection established");
+  console.log(">>> [SSE] New connection attempt...");
+
+  // ניהול ניתוקים ישנים אם יש
+  if (globalTransport) {
+    try {
+      console.log(">>> [SSE] Closing old connection to make room for new one.");
+      // כאן יכולה להיות לוגיקה לניתוק, אבל ה-SDK מנהל את זה לרוב
+    } catch (e) {
+      console.error("Error clearing old transport:", e);
+    }
+  }
+
   globalTransport = new SSEServerTransport("/messages", res);
   await mcpServer.connect(globalTransport);
+  console.log(">>> [SSE] Connection fully established.");
 });
 
 app.post("/messages", async (req, res) => {
-  if (globalTransport) {
-    // כאן ה-MCP קורא את הזרם (Stream) בעצמו.
-    // בגלל שמחקנו את express.json(), הזרם פנוי וקריא, והשגיאה תיעלם.
-    await globalTransport.handlePostMessage(req, res);
-  } else {
-    console.log("!!! [POST] No active transport found");
+  if (!globalTransport) {
+    console.log("!!! [POST] Received message but no SSE connection exists.");
     res.status(503).send("No active connection");
+    return;
+  }
+
+  try {
+    // עוטפים ב-try/catch כדי ששגיאת קריאה לא תקריס את השרת
+    await globalTransport.handlePostMessage(req, res);
+  } catch (error) {
+    console.error("!!! [POST] Error handling message:", error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
@@ -67,5 +95,5 @@ app.listen(port, "0.0.0.0", () => {
   const myUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${port}`;
   setInterval(() => {
     fetch(`${myUrl}/healthz`).catch(() => {});
-  }, 300000);
+  }, 300000); // 5 דקות
 });

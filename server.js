@@ -4,82 +4,75 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { z } from "zod";
 
-// --- הגנה מפני קריסות פתאומיות ---
-process.on("uncaughtException", (error) => {
-  console.error("!!! CRITICAL ERROR (Prevented Crash):", error);
-});
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("!!! UNHANDLED PROMISE (Prevented Crash):", reason);
-});
+process.on("uncaughtException", (error) =>
+  console.error("Prevented Crash:", error),
+);
+process.on("unhandledRejection", (reason) =>
+  console.error("Prevented Crash:", reason),
+);
 
 const app = express();
 app.use(cors());
 
-// יצירת השרת
 const mcpServer = new McpServer({
   name: "Weather Service",
-  description: "A service that provides weather information.",
   version: "1.0.0",
 });
 
-// הגדרת הכלי
 mcpServer.tool(
   "get_weather",
-  "Provides real-time weather information for ANY city IN THE WORLD globally. You must use this tool for any weather-related question regardless of the country or location.",
+  "Provides real-time weather information globally. Must use for any city.",
   {
     city: z
       .string()
-      .describe(
-        "The name of the city anywhere in the world MUST BE IN ENGLISH (e.g., 'Moscow', 'Tokyo', 'Tel Aviv'). Translate the user's input to English before sending.",
-      ),
+      .describe("City name in English (e.g., 'Moscow', 'Tel Aviv')"),
   },
   async ({ city }) => {
     console.log(`>>> [MCP] Handling request for: ${city}`);
     return {
       content: [
-        {
-          type: "text",
-          text: `מזג האוויר ב${city}: ☀️ שמשי ונעים, 25 מעלות.`,
-        },
+        { type: "text", text: `מזג האוויר ב${city}: ☀️ שמשי ונעים, 25 מעלות.` },
       ],
     };
   },
 );
 
-let globalTransport = null;
+// --- התיקון הגדול: מילון חיבורים במקום משתנה בודד ---
+const transports = new Map();
 
-// --- נקודת החיבור (SSE) - כאן נכנס התיקון שלך! ---
 app.get("/sse", async (req, res) => {
-  console.log(">>> [SSE] New connection attempt...");
+  console.log(">>> [SSE] New connection established.");
 
-  // התיקון: ניתוק צינור התקשורת הישן לפני שפותחים אחד חדש
-  if (globalTransport) {
-    try {
-      console.log(">>> [SSE] Closing old connection to make room for new one.");
-      await globalTransport.close();
-    } catch (e) {
-      console.error("Error closing old transport:", e);
-    }
-  }
+  // ה-SDK מייצר אוטומטית sessionId ייחודי לכל חיבור
+  const transport = new SSEServerTransport("/messages", res);
+  transports.set(transport.sessionId, transport);
 
-  // יצירת צינור תקשורת חדש
-  globalTransport = new SSEServerTransport("/messages", res);
+  // מחיקת החיבור הספציפי כשהלקוח מתנתק (למנוע זליגת זיכרון)
+  req.on("close", () => {
+    console.log(`>>> [SSE] Connection closed: ${transport.sessionId}`);
+    transports.delete(transport.sessionId);
+  });
 
   try {
-    await mcpServer.connect(globalTransport);
-    console.log(">>> [SSE] Connection fully established.");
+    await mcpServer.connect(transport);
   } catch (error) {
-    console.error(">>> [SSE] Failed to establish connection:", error.message);
+    console.error(">>> [SSE] Failed to connect:", error.message);
   }
 });
 
 app.post("/messages", async (req, res) => {
-  if (!globalTransport) {
+  // מוצאים את החיבור הספציפי ששלח את הבקשה
+  const sessionId = req.query.sessionId;
+  const transport = transports.get(sessionId);
+
+  if (!transport) {
+    console.log("!!! [POST] No active transport for session:", sessionId);
     res.status(503).send("No active connection");
     return;
   }
+
   try {
-    await globalTransport.handlePostMessage(req, res);
+    await transport.handlePostMessage(req, res);
   } catch (error) {
     console.error("!!! [POST] Error:", error);
     if (!res.headersSent) res.status(500).json({ error: error.message });
@@ -92,18 +85,12 @@ const port = process.env.PORT || 3000;
 app.listen(port, "0.0.0.0", () => {
   console.log(`MCP Server running on port ${port}`);
 
-  // הפינג העצמי לשמירת השרת ער
   const myUrl =
     process.env.RENDER_EXTERNAL_URL ||
     "https://weather-mcp-server-e3bs.onrender.com";
   setInterval(async () => {
     try {
-      const response = await fetch(`${myUrl}/healthz`);
-      if (response.ok) {
-        console.log(`[Keep-Alive] Success! Server is awake.`);
-      }
-    } catch (error) {
-      console.error(`[Keep-Alive] Ping failed: ${error.message}`);
-    }
+      await fetch(`${myUrl}/healthz`);
+    } catch (e) {}
   }, 480000);
 });

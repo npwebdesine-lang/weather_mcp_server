@@ -83,6 +83,9 @@ app.post("/messages", async (req, res) => {
   }
 });
 
+// ... (שאר הקוד של השרת נשאר בדיוק אותו דבר)
+
+// 5. נקודת ביקורת לבריאות השרת (חובה בשביל הפינג)
 app.get("/healthz", (req, res) => {
   res.status(200).send("OK");
 });
@@ -91,9 +94,29 @@ const port = process.env.PORT || 3000;
 app.listen(port, "0.0.0.0", () => {
   console.log(`MCP Server running on port ${port}`);
 
-  // מנגנון Keep-Alive
-  const myUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${port}`;
-  setInterval(() => {
-    fetch(`${myUrl}/healthz`).catch(() => {});
-  }, 300000); // 5 דקות
+  // >>> מנגנון Keep-Alive משודרג <<<
+  // הכנסתי את הכתובת שלך ישירות כגיבוי למקרה שמשתנה הסביבה ריק
+  const myUrl =
+    process.env.RENDER_EXTERNAL_URL ||
+    "https://weather-mcp-server-e3bs.onrender.com";
+
+  // נריץ את הפינג כל 8 דקות (480,000 מילישניות) - רנדר נרדם אחרי 15 דקות
+  setInterval(async () => {
+    try {
+      console.log(`[Keep-Alive] Waking up server... Pinging ${myUrl}/healthz`);
+      const response = await fetch(`${myUrl}/healthz`);
+
+      if (response.ok) {
+        console.log(
+          `[Keep-Alive] Success! Server is awake (Status: ${response.status})`,
+        );
+      } else {
+        console.error(
+          `[Keep-Alive] Warning: Received status ${response.status}`,
+        );
+      }
+    } catch (error) {
+      console.error(`[Keep-Alive] Ping failed: ${error.message}`);
+    }
+  }, 480000);
 });

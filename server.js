@@ -14,54 +14,68 @@ process.on("unhandledRejection", (reason) =>
 const app = express();
 app.use(cors());
 
-const mcpServer = new McpServer({
-  name: "Weather Service",
-  version: "1.0.0",
-});
-
-mcpServer.tool(
-  "get_weather",
-  "Provides real-time weather information globally. Must use for any city.",
-  {
-    city: z
-      .string()
-      .describe("City name in English (e.g., 'Moscow', 'Tel Aviv')"),
-  },
-  async ({ city }) => {
-    console.log(`>>> [MCP] Handling request for: ${city}`);
-    return {
-      content: [
-        { type: "text", text: `מזג האוויר ב${city}: ☀️ שמשי ונעים, 25 מעלות.` },
-      ],
-    };
-  },
-);
-
-// --- התיקון הגדול: מילון חיבורים במקום משתנה בודד ---
+// מילון ששומר את החיבורים הפעילים
 const transports = new Map();
 
-app.get("/sse", async (req, res) => {
-  console.log(">>> [SSE] New connection established.");
+// --- התיקון הקריטי: מפעל לייצור שרתי MCP ---
+// כל חיבור יקבל מופע (Instance) חדש ופרטי של השרת
+function createSessionServer() {
+  const server = new McpServer({
+    name: "Weather Service",
+    version: "1.0.0",
+  });
 
-  // ה-SDK מייצר אוטומטית sessionId ייחודי לכל חיבור
+  server.tool(
+    "get_weather",
+    "Provides real-time weather information globally. Must use for any city.",
+    {
+      city: z
+        .string()
+        .describe("City name in English (e.g., 'Moscow', 'Tel Aviv')"),
+    },
+    async ({ city }) => {
+      console.log(`>>> [MCP] Executing tool for: ${city}`);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `מזג האוויר ב${city}: ☀️ שמשי ונעים, 25 מעלות.`,
+          },
+        ],
+      };
+    },
+  );
+
+  return server;
+}
+
+app.get("/sse", async (req, res) => {
+  console.log(">>> [SSE] New connection request...");
+
+  // 1. יצירת צינור תקשורת חדש
   const transport = new SSEServerTransport("/messages", res);
   transports.set(transport.sessionId, transport);
 
-  // מחיקת החיבור הספציפי כשהלקוח מתנתק (למנוע זליגת זיכרון)
+  // 2. יצירת "מכשיר" MCP פרטי לחיבור הזה
+  const sessionServer = createSessionServer();
+
+  // 3. ניקוי הזיכרון כשהמשתמש מתנתק
   req.on("close", () => {
     console.log(`>>> [SSE] Connection closed: ${transport.sessionId}`);
     transports.delete(transport.sessionId);
   });
 
   try {
-    await mcpServer.connect(transport);
+    // 4. חיבור הצינור ל"מכשיר" הפרטי (לא יזרוק יותר שגיאת 'Already connected')
+    await sessionServer.connect(transport);
+    console.log(`>>> [SSE] Session ${transport.sessionId} fully established.`);
   } catch (error) {
     console.error(">>> [SSE] Failed to connect:", error.message);
   }
 });
 
 app.post("/messages", async (req, res) => {
-  // מוצאים את החיבור הספציפי ששלח את הבקשה
+  // הספריה של MCP שולחת את מזהה החיבור בשורת הכתובת
   const sessionId = req.query.sessionId;
   const transport = transports.get(sessionId);
 

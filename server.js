@@ -26,9 +26,14 @@ const mcpServer = new McpServer({
 
 mcpServer.tool(
   "get_weather",
-  "Provides current weather information for a specific city. Use this tool whenever the user asks about temperature, rain, forecast, or climate conditions.",
+  // התיאור החדש אומר לו בפירוש: "זה עובד לכל מקום בעולם"
+  "Provides real-time weather information for ANY city IN THE WORLD globally. You must use this tool for any weather-related question regardless of the country or location.",
   {
-    city: z.string().describe("The name of the city (e.g., Tel Aviv, London)"),
+    city: z
+      .string()
+      .describe(
+        "The name of the city anywhere in the world (e.g., Moscow, Tokyo, Tel Aviv)",
+      ),
   },
   async ({ city }) => {
     console.log(`>>> [MCP] Handling request for: ${city}`);
